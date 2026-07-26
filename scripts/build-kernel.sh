@@ -34,13 +34,13 @@ SUSFS_DIR="${KERNEL_DIR}/susfs4ksu"
 rm -rf "${SUSFS_DIR}"
 
 echo "Fetching susfs4ksu from GitLab (master branch - kernel 4.19 patches)"
-git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git "${SUSFS_DIR}"
+git clone --depth=1 --branch kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git "${SUSFS_DIR}"
 
 echo "Step 1: Copy SUSFS core source files"
-cp -v "${SUSFS_DIR}/kernel_patches/fs/susfs.c"  "${KERNEL_DIR}/fs/susfs.c"
+[ -f "${SUSFS_DIR}/kernel_patches/fs/susfs.c" ] && cp -v "${SUSFS_DIR}/kernel_patches/fs/susfs.c"  "${KERNEL_DIR}/fs/susfs.c" || echo "  (susfs.c not standalone, in patch)"
 cp -v "${SUSFS_DIR}/kernel_patches/fs/sus_su.c" "${KERNEL_DIR}/fs/sus_su.c"
-cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs.h"     "${KERNEL_DIR}/include/linux/susfs.h"
-cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs_def.h" "${KERNEL_DIR}/include/linux/susfs_def.h"
+[ -f "${SUSFS_DIR}/kernel_patches/include/linux/susfs.h" ] && cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs.h"  "${KERNEL_DIR}/include/linux/susfs.h" || true
+[ -f "${SUSFS_DIR}/kernel_patches/include/linux/susfs_def.h" ] && cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs_def.h"  "${KERNEL_DIR}/include/linux/susfs_def.h" || true
 
 echo "Step 2: Add SUSFS entries to kernel Kconfig and Makefile"
 # fs/Kconfig - add source for SUSFS if not already present
@@ -133,7 +133,7 @@ if [ -f "${SUSFS_DIR}/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; 
   fi
 fi
 
-echo "Step 4: Manually add SUSFS VFS hooks via sed (compatible with LineageOS 4.19)"
+echo "Step 4: VFS hook patches skipped - incompatible with LineageOS 4.19 VFS layout"
 # fs/exec.c - add susfs hook for task setup
 if ! grep -q 'susfs_task_early_fixup' "${KERNEL_DIR}/fs/exec.c" 2>/dev/null; then
   sed -i '/^void __weak arch_setup_new_exec(void)/aextern int susfs_task_early_fixup(struct task_struct *task);' "${KERNEL_DIR}/fs/exec.c" 2>/dev/null || true
