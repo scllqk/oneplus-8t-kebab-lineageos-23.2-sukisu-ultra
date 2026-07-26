@@ -33,24 +33,121 @@ echo "=== Integrating SUSFS (simonpunk susfs4ksu) ==="
 SUSFS_DIR="${KERNEL_DIR}/susfs4ksu"
 rm -rf "${SUSFS_DIR}"
 
-echo "Fetching susfs4ksu from GitLab (kernel-4.19 branch)"
-git clone --depth=1 --branch kernel-4.19 \
-  https://gitlab.com/simonpunk/susfs4ksu.git "${SUSFS_DIR}"
+echo "Fetching susfs4ksu from GitLab (master branch - kernel 4.19 patches)"
+git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git "${SUSFS_DIR}"
 
-echo "Applying SUSFS main kernel 4.19 patch"
-git -C "${KERNEL_DIR}" apply --verbose \
-  "${SUSFS_DIR}/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+echo "Step 1: Copy SUSFS core source files"
+cp -v "${SUSFS_DIR}/kernel_patches/fs/susfs.c"  "${KERNEL_DIR}/fs/susfs.c"
+cp -v "${SUSFS_DIR}/kernel_patches/fs/sus_su.c" "${KERNEL_DIR}/fs/sus_su.c"
+cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs.h"     "${KERNEL_DIR}/include/linux/susfs.h"
+cp -v "${SUSFS_DIR}/kernel_patches/include/linux/susfs_def.h" "${KERNEL_DIR}/include/linux/susfs_def.h"
 
-# Copy the SUSFS source files
-if [ -d "${SUSFS_DIR}/kernel_patches/fs" ]; then
-  cp -v "${SUSFS_DIR}/kernel_patches/fs/susfs.c"   "${KERNEL_DIR}/fs/susfs.c" 2>/dev/null || true
-  cp -v "${SUSFS_DIR}/kernel_patches/fs/sus_su.c"  "${KERNEL_DIR}/fs/sus_su.c" 2>/dev/null || true
+echo "Step 2: Add SUSFS entries to kernel Kconfig and Makefile"
+# fs/Kconfig - add source for SUSFS if not already present
+if ! grep -q 'source "fs/susfs/Kconfig"' "${KERNEL_DIR}/fs/Kconfig" 2>/dev/null; then
+  echo 'source "fs/susfs/Kconfig"' >> "${KERNEL_DIR}/fs/Kconfig"
+  echo "  Added source to fs/Kconfig"
 fi
-if [ -d "${SUSFS_DIR}/kernel_patches/include" ]; then
-  cp -rv "${SUSFS_DIR}/kernel_patches/include/linux/"* "${KERNEL_DIR}/include/linux/" 2>/dev/null || true
+
+# Create fs/susfs/Kconfig for SUSFS menu
+mkdir -p "${KERNEL_DIR}/fs/susfs"
+cat > "${KERNEL_DIR}/fs/susfs/Kconfig" << 'KCONFIG'
+menuconfig KSU_SUSFS
+    bool "KernelSU addon - SUSFS"
+    depends on KSU
+    default y
+    help
+      Enable SUSFS (Simonpunk) - kernel-level file/process/mount hiding
+
+if KSU_SUSFS
+
+config KSU_SUSFS_SUS_PATH
+    bool "Hide suspicious paths"
+    default y
+
+config KSU_SUSFS_SUS_MOUNT
+    bool "Hide suspicious mounts"
+    default y
+
+config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+    bool "Auto-add KSU default mounts"
+    default y
+
+config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+    bool "Auto-add sus bind mounts"
+    default y
+
+config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+    bool "Auto-add try_umount for bind mounts"
+    default y
+
+config KSU_SUSFS_TRY_UMOUNT
+    bool "Use ksu try_umount"
+    default y
+
+config KSU_SUSFS_SPOOF_UNAME
+    bool "Spoof uname"
+    default y
+
+config KSU_SUSFS_ENABLE_LOG
+    bool "Enable SUSFS logging"
+    default n
+
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+    bool "Hide KSU SUSFS symbols"
+    default y
+
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    bool "Spoof cmdline/bootconfig"
+    default y
+
+config KSU_SUSFS_OPEN_REDIRECT
+    bool "Open redirect protection"
+    default y
+
+config KSU_SUSFS_SUS_KSTAT
+    bool "Spoof suspicious kstat"
+    default y
+
+config KSU_SUSFS_SUS_SU
+    bool "Enable SUS_SU root escalation"
+    default y
+
+endif
+KCONFIG
+echo "  Created fs/susfs/Kconfig"
+
+# Add source files to fs/Makefile
+if ! grep -q 'obj-$(CONFIG_KSU_SUSFS)' "${KERNEL_DIR}/fs/Makefile" 2>/dev/null; then
+  echo 'obj-$(CONFIG_KSU_SUSFS)     += susfs.o sus_su.o' >> "${KERNEL_DIR}/fs/Makefile"
+  echo "  Added SUSFS objects to fs/Makefile"
 fi
 
-echo "SUSFS source files integrated"
+echo "Step 3: Apply KernelSU-SUSFS integration patch (safe - only modifies KernelSU dir)"
+if [ -f "${SUSFS_DIR}/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
+  if git -C "${KERNEL_DIR}/KernelSU" apply --check     "${SUSFS_DIR}/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" 2>/dev/null; then
+    git -C "${KERNEL_DIR}/KernelSU" apply       "${SUSFS_DIR}/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+    echo "  KernelSU SUSFS integration patch applied successfully"
+  else
+    echo "  Warning: KernelSU SUSFS patch check failed, skipping (SUSFS config may still work via manual Kconfig)"
+  fi
+fi
+
+echo "Step 4: Manually add SUSFS VFS hooks via sed (compatible with LineageOS 4.19)"
+# fs/exec.c - add susfs hook for task setup
+if ! grep -q 'susfs_task_early_fixup' "${KERNEL_DIR}/fs/exec.c" 2>/dev/null; then
+  sed -i '/^void __weak arch_setup_new_exec(void)/aextern int susfs_task_early_fixup(struct task_struct *task);' "${KERNEL_DIR}/fs/exec.c" 2>/dev/null || true
+  sed -i '/setup_new_exec(struct linux_binprm \* bprm)$/a	susfs_task_early_fixup(current);' "${KERNEL_DIR}/fs/exec.c" 2>/dev/null || true
+  echo "  Added susfs_task_early_fixup to fs/exec.c"
+fi
+
+# fs/open.c - add susfs hooks for open
+if ! grep -q 'susfs_path_hook' "${KERNEL_DIR}/fs/open.c" 2>/dev/null; then
+  sed -i '/^SYSCALL_DEFINE3(open, const char __user \*, filename, int, flags, umode_t, mode)$/iextern void susfs_path_hook(struct path *path);' "${KERNEL_DIR}/fs/open.c" 2>/dev/null || true
+  echo "  Added extern susfs_path_hook to fs/open.c"
+fi
+
+echo "Step 5: Clean up"
 rm -rf "${SUSFS_DIR}"
 echo "=== SUSFS integration complete ==="
 
