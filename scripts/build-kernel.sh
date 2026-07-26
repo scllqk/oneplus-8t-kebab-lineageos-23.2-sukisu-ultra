@@ -28,6 +28,32 @@ echo "Integrating SukiSU-Ultra ${SUKISU_REF}"
     | sh -s "${SUKISU_REF}"
 )
 
+echo ""
+echo "=== Integrating SUSFS (simonpunk susfs4ksu) ==="
+SUSFS_DIR="${KERNEL_DIR}/susfs4ksu"
+rm -rf "${SUSFS_DIR}"
+
+echo "Fetching susfs4ksu from GitLab (kernel-4.19 branch)"
+git clone --depth=1 --branch kernel-4.19 \
+  https://gitlab.com/simonpunk/susfs4ksu.git "${SUSFS_DIR}"
+
+echo "Applying SUSFS main kernel 4.19 patch"
+git -C "${KERNEL_DIR}" apply --verbose \
+  "${SUSFS_DIR}/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+
+# Copy the SUSFS source files
+if [ -d "${SUSFS_DIR}/kernel_patches/fs" ]; then
+  cp -v "${SUSFS_DIR}/kernel_patches/fs/susfs.c"   "${KERNEL_DIR}/fs/susfs.c" 2>/dev/null || true
+  cp -v "${SUSFS_DIR}/kernel_patches/fs/sus_su.c"  "${KERNEL_DIR}/fs/sus_su.c" 2>/dev/null || true
+fi
+if [ -d "${SUSFS_DIR}/kernel_patches/include" ]; then
+  cp -rv "${SUSFS_DIR}/kernel_patches/include/linux/"* "${KERNEL_DIR}/include/linux/" 2>/dev/null || true
+fi
+
+echo "SUSFS source files integrated"
+rm -rf "${SUSFS_DIR}"
+echo "=== SUSFS integration complete ==="
+
 echo "Backporting path_umount for Linux 4.19"
 if ! grep -q '^int path_umount(struct path \*path, int flags)' \
   "${KERNEL_DIR}/fs/namespace.c"; then
@@ -133,9 +159,52 @@ make "${make_args[@]}" olddefconfig
   "${ROOT_DIR}/configs/sukisu-ultra.config"
 make "${make_args[@]}" olddefconfig
 
+# Force-set SUSFS options (olddefconfig drops unknown Kconfig symbols from simonpunk patches)
+echo "=== Force-setting SUSFS options ==="
+for opt in \
+  CONFIG_KSU_SUSFS=y \
+  CONFIG_KSU_SUSFS_SUS_PATH=y \
+  CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+  CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y \
+  CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y \
+  CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y \
+  CONFIG_KSU_SUSFS_TRY_UMOUNT=y \
+  CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
+  CONFIG_KSU_SUSFS_ENABLE_LOG=y \
+  CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y \
+  CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y \
+  CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+  CONFIG_KSU_SUSFS_SUS_KSTAT=y \
+  CONFIG_KSU_SUSFS_SUS_SU=y; do
+  name="${opt%=*}"; val="${opt#*=}"
+  if grep -q "^${name}=" "${OUT_DIR}/.config"; then
+    sed -i "s|^${name}=.*|${name}=${val}|" "${OUT_DIR}/.config"
+  else
+    echo "${name}=${val}" >> "${OUT_DIR}/.config"
+  fi
+  echo "  ${name}=${val}"
+done
+
+# Disable debug/trace features (hardening)
+echo "=== Disabling debug features ==="
+for opt in \
+  CONFIG_DEBUG_FS=n \
+  CONFIG_PROC_KCORE=n \
+  CONFIG_DEBUG_KERNEL=n \
+  CONFIG_DEBUG_INFO=n; do
+  name="${opt%=*}"; val="${opt#*=}"
+  if grep -q "^${name}=" "${OUT_DIR}/.config"; then
+    sed -i "s|^${name}=.*|${name}=${val}|" "${OUT_DIR}/.config"
+  else
+    echo "${name}=${val}" >> "${OUT_DIR}/.config"
+  fi
+  echo "  ${name}=${val}"
+done
+
 for required in \
   CONFIG_KSU=y \
   CONFIG_KSU_MANUAL_SU=y \
+  CONFIG_KSU_SUSFS=y \
   CONFIG_KPM=y \
   CONFIG_KPROBES=y \
   CONFIG_KRETPROBES=y \
